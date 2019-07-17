@@ -1,0 +1,156 @@
+
+create table categoria (
+	tipo  varchar(32) PRIMARY KEY
+);
+
+create table modello (
+	nome varchar(32),
+	produttore varchar(32),
+	tipo varchar (32) references categoria on update cascade on delete no action,
+	servosterzo boolean,
+	airbag boolean,
+	ac boolean,
+	dimensioni varchar(32),
+	motorizzazione varchar(32),
+	nporte decimal (1,0) CHECK (nporte >= 0),
+	nposti decimal (1,0) CHECK (nposti >= 0),
+	vmax decimal(3,0) CHECK (vmax >=0),
+	consumoav decimal (2,1) CHECK (consumoav >= 0),
+	PRIMARY KEY (nome,produttore,nporte)
+);
+
+create table parcheggio (
+	nome varchar(32) PRIMARY KEY,
+	zona varchar(32),
+	nposti decimal (3,0) CHECK (nposti >= 0),
+	long decimal(3,2) CHECK (long >=0),
+	lat decimal(3,2) CHECK (lat >=0),
+	indirizzo varchar(32)
+);
+
+create table vettura (
+	nome varchar(32) PRIMARY KEY,
+	modello varchar(32),
+	produttore varchar (32),
+	nporte decimal (1,0),
+	targa varchar(7),
+	colore varchar(32),
+	parcheggio varchar(32) REFERENCES parcheggio,
+	km decimal (6,0) NOT NULL DEFAULT 0 CHECK (km >=0),
+	bimbi boolean,
+	animali boolean,
+        FOREIGN KEY (modello,produttore,nporte) REFERENCES modello(nome, produttore, nporte) on update cascade on delete no action
+);
+
+
+create table posti (
+	tipo  varchar(32) references categoria on update cascade on delete no action,
+	nome  varchar(32) references parcheggio on update cascade on delete no action,
+	primary key(tipo,nome)
+);
+
+create table utente (
+	codiceutente SERIAL PRIMARY KEY,
+	databonusrottamazione date,
+	under26 boolean
+);
+
+create table prenotazione(
+	codiceutente INT references utente,
+	numero SERIAL,
+	vettura varchar(32) references vettura,
+	dataritiro date,
+	oraritiro time,
+	dataconsegna date,
+	oraconsegna time,
+	PRIMARY KEY(codiceutente,numero)
+);
+
+create table utilizzoeffettivo (
+	codiceutente INT,
+	numero INT,
+	costo INT,
+	kmritiro INT,
+	kmriconsegna INT,
+	benzinarimanente decimal(2,1),
+	orariritiro time,
+	orariconsegna time,
+	dataritiro date,
+	datariconsegna date,
+	PRIMARY KEY(codiceutente,numero),
+	FOREIGN KEY(codiceutente,numero) references prenotazione(codiceutente,numero)
+);
+
+create table rifornimento (
+	codiceutente INT,
+	numero INT,
+	nrifornimento SERIAL,
+	litri decimal(2,1),
+	PRIMARY KEY(codiceutente,numero,nrifornimento),
+	FOREIGN KEY(codiceutente,numero) references utilizzoeffettivo(codiceutente,numero)
+);
+
+create table tipoabbonamento (
+	nome  varchar(32) PRIMARY KEY,
+	durata  decimal(2,0) check (durata >= 0),
+	costo  decimal(3,0) check (costo >= 0)
+);
+
+create table abbonamento (
+	codiceutente INT references utente on update cascade on delete no action,
+	datainizio  date,
+	pin  decimal(4,0),
+	tipo varchar(32) references tipoabbonamento on update cascade on delete no action,
+	PRIMARY KEY (codiceutente,datainizio)
+);
+
+create table datianagrafici (
+	CF varchar(16) PRIMARY KEY, 
+	utente INT references utente on update cascade on delete no action,
+	nome varchar(32),
+	cognome varchar(32),
+	luogon varchar(32),
+	datan date,
+	sesso char check (sesso = 'M' or sesso = 'F' or sesso = 'm' or sesso = 'f'),
+	professione varchar(32),
+	estremoid varchar(9) unique,
+	estremopatente varchar(10) unique,
+	categoriapatente char
+);
+
+create table sinistro (
+	numsin SERIAL PRIMARY KEY,
+	cf varchar(16) references datianagrafici,
+	vettura varchar(32) references vettura,
+	datasin date,
+	ora time,
+	luogo varchar(32),
+	danni text,
+	dinamiche text
+);
+
+create table personecoinvolte (
+	cf varchar(16),
+	numsin INT references sinistro,
+	PRIMARY KEY (cf, numsin)
+);
+
+create table vetturecoinvolte (
+	targa varchar(7),
+	numsin INT references sinistro,
+	PRIMARY KEY (targa, numsin)
+);
+
+
+create table tariffa (
+	nome 				  VARCHAR(32),
+	produttore 			  VARCHAR (32),
+	nporte 				  DECIMAL (1,0),
+	costokm 			  INT CHECK(costokm > 0),
+	costoora 			  INT CHECK(costoora > 0),
+	costogiorno			  INT CHECK(costogiorno > 0),
+	costogiornosettimana  INT CHECK(costogiornosettimana > 0),
+	costogiornoaggiuntivo INT CHECK(costogiornoaggiuntivo > 0),
+	FOREIGN KEY(nome, produttore, nporte) references modello(nome,produttore, nporte);
+	PRIMARY KEY (targa, numsin)
+);

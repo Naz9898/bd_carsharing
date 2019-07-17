@@ -1,0 +1,164 @@
+---1
+---------------------------------------------Parte comune
+
+-- Differenza
+
+-- Outer-Join
+
+--Altro
+
+--------------------------------------------Parte coperta
+
+-- Differenza
+-- Parcheggi in cui tutti i veicoli hanno effettuato almeno 3 rifornimenti nell'ultimo mese
+
+select parcheggio from vettura
+except 
+select parcheggio from vettura where nome NOT IN
+	(--vetture che hanno effettuato 3 rifornimenti nell'ultimo mese
+	select  prenotazione.vettura from prenotazione, utilizzoeffettivo, rifornimento
+	where prenotazione.codiceutente = utilizzoeffettivo.codiceutente and prenotazione.numero = utilizzoeffettivo.numero
+	and rifornimento.codiceutente = utilizzoeffettivo.codiceutente and rifornimento.numero = utilizzoeffettivo.numero
+	and prenotazione.dataritiro > Now() - interval '1 month'
+	group by prenotazione.vettura having count(*) > 2)
+;
+
+-- Outer-Join
+
+--Altro
+
+
+---2
+---------------------------------------------Parte comune
+
+-- Update
+-- Diminuzione del costo di tutti gli abbonamenti del 10%
+
+UPDATE tipoabbonamento SET costo = costo * 0.9 WHERE costo >= 1000;
+
+--Aggiornare parcheggio a vettura
+update vettura set parcheggio = 'PiccaPietra' where nome = 'Alessia';
+
+-- Delete
+-- Eliminazione dei parcheggi che non ospitano nessun veicolo
+
+--Insert
+
+--------------------------------------------Parte coperta
+
+-- Update
+
+-- Delete
+-- Eliminare i rifornimenti effettuati durante utilizzi di meno di 3 ore
+
+--Insert
+
+
+---3
+-------------------------------------------Parte comune
+
+--Divisione effettuata con group by
+--utenti che hanno utilizzato tutte le vetture nell'ultimo anno
+
+select codiceutente from prenotazione,vettura where prenotazione.vettura = vettura.nome 
+and prenotazione.dataritiro > Now() - interval '1 year'
+group by prenotazione.codiceutente having count(distinct vettura) = (select count(*) from vettura);
+
+--Sotto-query
+--Statistiche vettura
+
+select y.vettura, SUM(MinutiUtilizzo) AS MinutiUtilizzo, SUM(MinutiPrenotati) AS MinutiPrenotati, SUM (MinutiNonUtili) AS MinutiNonUtili from (
+	select Vettura, MinutiUtilizzo, MinutiPrenotati, MinutiPrenotati - MinutiUtilizzo  AS MinutiNonUtili FROM(
+		select prenotazione.vettura ,(
+			DATE_PART('day', (utilizzoeffettivo.datariconsegna + utilizzoeffettivo.orariconsegna)::timestamp - (utilizzoeffettivo.dataritiro + utilizzoeffettivo.oraritiro)::timestamp) * 24 + 
+			DATE_PART('hour',(utilizzoeffettivo.datariconsegna + utilizzoeffettivo.orariconsegna)::timestamp - (utilizzoeffettivo.dataritiro + utilizzoeffettivo.oraritiro)::timestamp)
+			 ) * 60 +
+			 DATE_PART('minute', (utilizzoeffettivo.datariconsegna + utilizzoeffettivo.orariconsegna)::timestamp - (utilizzoeffettivo.dataritiro + utilizzoeffettivo.oraritiro)::timestamp) 
+			 AS MinutiUtilizzo,
+
+			 (
+			DATE_PART('day', (prenotazione.dataconsegna + prenotazione.oraconsegna)::timestamp - (prenotazione.dataritiro + prenotazione.oraritiro)::timestamp) * 24 + 
+			DATE_PART('hour',(prenotazione.dataconsegna + prenotazione.oraconsegna)::timestamp - (prenotazione.dataritiro + prenotazione.oraritiro)::timestamp)
+			 ) * 60 +
+			 DATE_PART('minute', (prenotazione.dataconsegna + prenotazione.oraconsegna)::timestamp - (prenotazione.dataritiro + prenotazione.oraritiro)::timestamp) 
+			 AS MinutiPrenotati
+
+		from prenotazione, utilizzoeffettivo
+		where prenotazione.codiceutente = utilizzoeffettivo.codiceutente and prenotazione.numero = utilizzoeffettivo.numero
+		and prenotazione.dataritiro >  Now() - interval '7 days' and prenotazione.dataritiro < Now()
+
+	) as x
+) as y  group by (y.vettura);
+
+-- Funzioni di gruppo
+-- Parcheggi con utilizzi sopra media categoria
+
+--Restituisce l'utilizzo per ogni vettura
+CREATE OR REPLACE FUNCTION vettura_utilizzo() 
+RETURNS TABLE (parcheggio vettura.parcheggio%TYPE,tipo categoria.tipo%TYPE, utilizzo INTERVAL) AS
+$$ 	
+BEGIN
+	RETURN QUERY 
+	SELECT vettura.parcheggio,categoria.tipo, age(utilizzoeffettivo.datariconsegna + utilizzoeffettivo.orariconsegna, utilizzoeffettivo.dataritiro + utilizzoeffettivo.oraritiro) AS utilizzo
+	FROM categoria, vettura, modello, prenotazione, utilizzoeffettivo 
+	WHERE categoria.tipo = modello.tipo 
+	AND vettura.modello = modello.nome AND vettura.produttore = modello.produttore AND vettura.nporte = modello.nporte
+	AND prenotazione.vettura = vettura.nome
+	AND prenotazione.codiceutente = utilizzoeffettivo.codiceutente AND prenotazione.numero = utilizzoeffettivo.numero 
+	AND utilizzoeffettivo.datariconsegna IS NOT NULL
+	AND prenotazione.dataritiro > Now - interval '1 month';
+END	
+$$
+LANGUAGE plpgsql;
+
+select parcheggio from vettura_utilizzo() as x
+group by parcheggio, tipo having avg(utilizzo) >
+(	select media from
+	(
+		select tipo,avg(utilizzo) as media from vettura_utilizzo()
+		group by tipo
+	) as y where tipo = x.tipo
+);
+
+-------------------------------------------Parte coperta
+
+--Group by e funzione di aggregazione
+--Per ogni auto, il numero totale di litri riforniti
+
+select vettura.nome, SUM(litri) AS totL from vettura, modello, prenotazione, rifornimento where 
+	vettura.modello = modello.nome AND vettura.produttore = modello.produttore AND vettura.nporte = modello.nporte
+	AND vettura.nome = prenotazione.vettura AND prenotazione.codiceutente = rifornimento.codiceutente 
+	AND prenotazione.numero = rifornimento.numero
+	GROUP BY (vettura.nome)
+
+--Sub-query, outer-join, group by e funzione di aggregazione
+--Tutte le vetture che hanno effetuato meno incidenti rispetto alla media
+
+select distinct vettura.nome from vettura left outer join sinistro on vettura.nome = sinistro.vettura
+group by vettura.nome having count(sinistro.numsin) < (
+	select AVG(nincidente) from (
+		select vettura.nome, count(numsin) as nincidente from vettura left outer join sinistro on vettura.nome = sinistro.vettura
+		group by vettura.nome
+	) as x
+);
+
+--Sub-query, funzioni di gruppo
+--Per ogni vettura l'utente che ha effettutato più rifornimenti
+
+select x.vettura, x.codiceutente from rifornimento, utilizzoeffettivo, prenotazione as x
+where rifornimento.codiceutente = utilizzoeffettivo.codiceutente 
+AND rifornimento.numero = utilizzoeffettivo.numero
+AND x.numero = utilizzoeffettivo.numero 
+AND x.codiceutente = utilizzoeffettivo.codiceutente
+group by x.vettura, x.codiceutente having count(nrifornimento) = (
+	select MAX(numero) from(
+		select prenotazione.vettura, prenotazione.codiceutente, count(nrifornimento) as numero from rifornimento, utilizzoeffettivo, prenotazione 
+		where rifornimento.codiceutente = utilizzoeffettivo.codiceutente 
+		AND rifornimento.numero = utilizzoeffettivo.numero
+		AND prenotazione.numero = utilizzoeffettivo.numero 
+		AND prenotazione.codiceutente = utilizzoeffettivo.codiceutente
+		AND prenotazione.vettura = x.vettura
+		group by prenotazione.vettura, prenotazione.codiceutente
+	) as y
+)
+

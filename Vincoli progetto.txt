@@ -1,0 +1,278 @@
+--Un solo abbonamento valido
+
+CREATE OR REPLACE FUNCTION Singolo_Abbonamento_Valido() RETURNS trigger AS
+$$ 
+BEGIN
+	IF EXISTS (
+		Select * from abbonamento,tipoabbonamento where abbonamento.tipo = tipoabbonamento.nome
+		and NEW.datainizio < (datainizio + durata * interval '1 month') AND codiceutente = NEW.codiceutente
+	)
+	THEN raise exception 'Abbonamento già valido presente';
+		ELSE RETURN NEW;
+	END IF;
+END	
+$$
+LANGUAGE plpgsql;
+
+
+CREATE TRIGGER Trigger_Singolo_Abbonamento_Valido
+BEFORE INSERT ON Abbonamento
+FOR EACH ROW
+EXECUTE PROCEDURE Singolo_Abbonamento_Valido();
+
+--No prenotazione senza abbonamento
+
+CREATE OR REPLACE FUNCTION Prenotazione_Abbonamento_Valido() RETURNS trigger AS
+$$ 
+DECLARE
+BEGIN
+	IF EXISTS (
+		Select * from abbonamento,tipoabbonamento where abbonamento.tipo = tipoabbonamento.nome
+		AND codiceutente = NEW.codiceutente
+		AND NEW.dataritiro   >  datainizio
+		AND NEW.dataconsegna < (datainizio + durata * interval '1 month') 
+	)
+	THEN return NEW;
+		ELSE raise exception 'nessun abbonamento valido';
+	END IF;
+END
+$$
+LANGUAGE plpgsql;
+
+
+CREATE TRIGGER Trigger_Prenotazione_Abbonamento_Valido
+BEFORE INSERT ON Prenotazione
+FOR EACH ROW
+EXECUTE PROCEDURE Prenotazione_Abbonamento_Valido();
+
+--No ora o data prenotazione incoerente
+
+CREATE OR REPLACE FUNCTION Ora_Prenotazione_Valido() RETURNS trigger AS
+$$ 	
+BEGIN
+	IF NEW.dataconsegna > NEW.dataritiro OR (NEW.dataconsegna = NEW.dataritiro AND NEW.oraconsegna >= NEW.oraritiro + interval '15 minutes')
+	THEN return NEW;
+		ELSE raise exception 'orari o data non validi';
+	END IF;
+END	
+$$
+LANGUAGE plpgsql;
+
+
+CREATE TRIGGER Trigger_Ora_Prenotazione_Valido
+BEFORE INSERT ON Prenotazione
+FOR EACH ROW
+EXECUTE PROCEDURE Ora_Prenotazione_Valido();
+
+--Il numero di vetture presenti in un parcheggio non deve mai eccedere il numero posti dello stesso.
+
+CREATE OR REPLACE FUNCTION Numero_Parcheggio_Valido() RETURNS trigger AS
+$$ 	
+DECLARE
+	var_n parcheggio.nposti%TYPE = (select count(*) from vettura where  
+		 vettura.parcheggio = NEW.parcheggio);
+	var_nmax parcheggio.nposti%TYPE = (select nposti from parcheggio where  
+		 parcheggio.nome = NEW.parcheggio);
+BEGIN
+	IF var_n+1 <= var_nmax	THEN return NEW;
+		ELSE raise exception 'parcheggio pieno';
+	END IF;
+END	
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER Trigger_Numero_Parcheggio_Valido
+BEFORE INSERT OR UPDATE ON Vettura
+FOR EACH ROW
+EXECUTE PROCEDURE Numero_Parcheggio_Valido();
+
+--Un parcheggio non deve contenere veicoli di una categoria che non puo` ospitare.
+
+CREATE OR REPLACE FUNCTION Categoria_Parcheggio_Valido() RETURNS trigger AS
+$$ 	
+
+BEGIN
+	IF ((select tipo from modello where modello.nome = NEW.modello AND modello.produttore = NEW.produttore) IN (select tipo from posti where NEW.parcheggio = posti.nome))	THEN return NEW;
+		ELSE raise exception 'Categoria non valida';
+	END IF;
+END	
+$$
+LANGUAGE plpgsql;
+
+
+CREATE TRIGGER Trigger_Categoria_Parcheggio_Valido
+BEFORE INSERT OR UPDATE ON Vettura
+FOR EACH ROW
+EXECUTE PROCEDURE Categoria_Parcheggio_Valido();
+
+--Prenotazioni con stessa macchina non si possono sovrapporre (Un trigger per data e uno per orario per semplicità)
+
+--Controlla se la vettura è disponibile in quella data
+
+CREATE OR REPLACE FUNCTION Vettura_Prenontazione_Disponibile_Data() RETURNS trigger AS
+$$ 	
+BEGIN
+		IF EXISTS ( 
+			select * from prenotazione where
+			vettura = NEW.vettura 
+			AND (
+				   (NEW.dataritiro   > dataritiro AND NEW.dataritiro   < dataconsegna)
+				OR (NEW.dataconsegna > dataritiro AND NEW.dataconsegna < dataconsegna) 
+			)
+		)
+		THEN raise exception 'La macchina non è disponibile in quel giorno';
+	ELSE RETURN NEW;
+	END IF;
+END	
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER Trigger_Vettura_Prenontazione_Disponibile_Data
+BEFORE INSERT ON Prenotazione
+FOR EACH ROW
+EXECUTE PROCEDURE Vettura_Prenontazione_Disponibile_Data();
+
+--controlla se la vettura è disponibile per l'orario specificato
+
+CREATE OR REPLACE FUNCTION Vettura_Prenontazione_Disponibile_Ora() RETURNS trigger AS
+$$ 	
+BEGIN
+		IF EXISTS ( 
+			select * from prenotazione where
+			vettura = NEW.vettura 
+			AND (
+				(NEW.dataritiro = NEW.dataconsegna AND dataritiro = dataconsegna
+					 AND(
+						 (NEW.oraritiro   > oraritiro AND NEW.oraritiro  < oraconsegna)
+						  OR
+						 (NEW.oraconsegna > oraritiro AND NEW.oraconsegna < oraconsegna)
+					 )
+				 )
+				OR (
+					(NEW.dataritiro != NEW.dataconsegna) OR (dataritiro != dataconsegna)
+					AND
+				 (
+					    (NEW.dataritiro   = dataconsegna AND NEW.oraritiro   < oraconsegna)
+					 OR (NEW.dataconsegna = dataritiro   AND NEW.oraconsegna > oraritiro))
+				)
+				
+			)
+		)
+		THEN raise exception 'La macchina non è disponibile per quel orario';
+	ELSE RETURN NEW;
+	END IF;
+END	
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER Trigger_Vettura_Prenontazione_Disponibile_Ora
+BEFORE INSERT ON Prenotazione
+FOR EACH ROW
+EXECUTE PROCEDURE Vettura_Prenontazione_Disponibile_Ora();
+
+--Un sinistro può avvenire solo durante un utilizzo dell'auto a cui si riferisce
+CREATE OR REPLACE FUNCTION Data_Sinistro_Valido() RETURNS trigger AS
+$$ 	
+
+BEGIN
+		IF EXISTS (
+			select * from utilizzoeffettivo,prenotazione 
+			where utilizzoeffettivo.codiceutente = prenotazione.codiceutente AND utilizzoeffettivo.numero = prenotazione.numero 
+			AND NEW.datasin >= utilizzoeffettivo.dataritiro AND NEW.datasin <= utilizzoeffettivo.datariconsegna 
+			AND 
+			(
+				(utilizzoeffettivo.dataritiro = utilizzoeffettivo.datariconsegna AND utilizzoeffettivo.oraritiro < NEW.ora AND utilizzoeffettivo.orariconsegna > NEW.ora)
+				OR 
+				(utilizzoeffettivo.dataritiro != utilizzoeffettivo.datariconsegna AND
+					 (
+						(NEW.datasin = utilizzoeffettivo.dataritiro AND utilizzoeffettivo.oraritiro < NEW.ora)
+						OR 
+						(NEW.datasin = utilizzoeffettivo.datariconsegna AND utilizzoeffettivo.orariconsegna > NEW.ora)
+					 )
+				 )
+		   )
+		)
+		THEN return NEW;
+	ELSE raise exception 'La macchina non era in utilizzo in quel momento';
+	END IF;
+END	
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER Trigger_Data_Sinistro_Valido
+BEFORE INSERT ON Sinistro
+FOR EACH ROW
+EXECUTE PROCEDURE Data_Sinistro_Valido();
+
+--Km rifornimento coerenti
+
+CREATE OR REPLACE FUNCTION Km_Rifornimento_Valido() RETURNS trigger AS
+$$ 	
+BEGIN
+	IF NEW.nrifornimento = 1 AND NEW.km > (
+		select kmritiro from utilizzoeffettivo
+		where NEW.codiceutente = utilizzoeffettivo.codiceutente 
+			  AND NEW.numero = utilizzoeffettivo.numero
+	)
+	THEN return NEW;
+	ELSE 
+		IF NEW.km > (
+			select km from rifornimento 
+			where NEW.codiceutente = rifornimento.codiceutente 
+			  AND NEW.numero	   = rifornimento.numero
+			  AND rifornimento.nrifornimento = (NEW.nrifornimento-1)
+		)
+		THEN  return NEW;
+		ELSE  raise exception 'km non validi'; 
+		END IF;
+	END IF;
+END	
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER Trigger_Km_Rifornimento_Valido
+BEFORE INSERT OR UPDATE ON Rifornimento
+FOR EACH ROW
+EXECUTE PROCEDURE Km_Rifornimento_Valido();
+
+--Inserisci codice utente per ogni nuovo abbonato
+
+CREATE OR REPLACE FUNCTION Inserimento_Utente() RETURNS trigger AS
+$$ 	
+BEGIN
+	IF NEW.datan > Now() - interval '26 years'
+		THEN insert into utente values (NEW.utente, null, true);
+		ELSE insert into utente values (NEW.utente, null, false);
+	END IF;
+	RETURN NEW;
+END	
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER Trigger_Inserimento_Utente
+BEFORE INSERT ON datianagrafici
+FOR EACH ROW
+EXECUTE PROCEDURE inserimento_utente();
+
+--Creazione viste fatturazione
+
+CREATE OR REPLACE FUNCTION calcolo_fatturazione(var_utente INT, var_numero INT) returns void AS
+$$
+	DECLARE
+		var_ritiro DATE;
+		var_consegna DATE;
+		var_diff INTERVAL;
+		 
+	BEGIN
+		select dataritiro, dataconsegna INTO var_ritiro, var_consegna from utilizzoeffettivo 
+		 where codiceutente = var_utente AND numero = var_numero;
+		 var_diff = DATE_PART('day', var_consegna - var_ritiro);
+		 raise notice '%', var_diff;
+		
+	END
+$$
+LANGUAGE plpgsql; 
+
+CREATE VIEW Fatturazione AS
+SELECT codiceutente, numero, calcolofatturazione (codiceutente, numero) AS costo from utilizzoeffettivo 
+where dataconsegna NOT NULL AND ora consegna NOT NULL;
